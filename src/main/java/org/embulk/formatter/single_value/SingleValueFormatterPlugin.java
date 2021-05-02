@@ -59,16 +59,6 @@ public class SingleValueFormatterPlugin
         @ConfigDefault("\"%Y-%m-%d %H:%M:%S.%6N %z\"")
         public String getTimestampFormat();
 
-        // From org.embulk.spi.time.TimestampFormatter.Task
-        @Config("default_timezone")
-        @ConfigDefault("\"UTC\"")
-        public String getDefaultTimeZoneId();
-
-        // From org.embulk.spi.time.TimestampFormatter.Task
-        @Config("default_timestamp_format")
-        @ConfigDefault("\"%Y-%m-%d %H:%M:%S.%6N %z\"")
-        public String getDefaultTimestampFormat();
-
         // From org.embulk.spi.util.LineEncoder.Task
         @Config("charset")
         @ConfigDefault("\"utf-8\"")
