@@ -11,7 +11,7 @@ repositories {
 }
 
 embulkPlugin {
-    mainClass = "embulk.formatter.single_value.SingleValueFormatterPlugin"
+    mainClass = "org.embulk.formatter.single_value.SingleValueFormatterPlugin"
     category = "formatter"
     type = "single_value"
 }
