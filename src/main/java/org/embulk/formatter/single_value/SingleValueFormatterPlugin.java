@@ -1,13 +1,19 @@
 package org.embulk.formatter.single_value;
 
-import com.google.common.base.Optional;
-import com.google.common.collect.ImmutableList;
+import java.nio.charset.Charset;
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
+import java.util.Optional;
 
-import org.embulk.config.Config;
-import org.embulk.config.ConfigDiff;
-import org.embulk.config.ConfigDefault;
+import org.embulk.spi.Exec;
+import org.embulk.util.config.Config;
+import org.embulk.util.config.ConfigDefault;
 import org.embulk.config.ConfigSource;
-import org.embulk.config.Task;
+import org.embulk.util.config.ConfigMapper;
+import org.embulk.util.config.ConfigMapperFactory;
+import org.embulk.util.config.Task;
 import org.embulk.config.TaskSource;
 
 import org.embulk.spi.Column;
@@ -18,19 +24,24 @@ import org.embulk.spi.Page;
 import org.embulk.spi.PageOutput;
 import org.embulk.spi.PageReader;
 import org.embulk.spi.Schema;
-import org.embulk.spi.time.Timestamp;
-import org.embulk.spi.time.TimestampFormatter;
-import org.embulk.spi.util.LineEncoder;
+import org.embulk.util.config.TaskMapper;
+import org.embulk.util.text.Newline;
+import org.embulk.util.timestamp.TimestampFormatter;
+import org.embulk.util.text.LineEncoder;
 
-import org.joda.time.DateTimeZone;
-import org.jruby.embed.ScriptingContainer;
 import org.msgpack.value.Value;
 
 public class SingleValueFormatterPlugin
         implements FormatterPlugin
 {
+    private static final ConfigMapperFactory CONFIG_MAPPER_FACTORY = ConfigMapperFactory
+            .builder()
+            .addDefaultModules()
+            .build();
+    private static final ConfigMapper CONFIG_MAPPER = CONFIG_MAPPER_FACTORY.createConfigMapper();
+
     public interface PluginTask
-            extends Task, LineEncoder.EncoderTask, TimestampFormatter.Task
+            extends Task
     {
         @Config("column_name")
         @ConfigDefault("null")
@@ -47,14 +58,36 @@ public class SingleValueFormatterPlugin
         @Config("timestamp_format")
         @ConfigDefault("\"%Y-%m-%d %H:%M:%S.%6N %z\"")
         public String getTimestampFormat();
+
+        // From org.embulk.spi.time.TimestampFormatter.Task
+        @Config("default_timezone")
+        @ConfigDefault("\"UTC\"")
+        public String getDefaultTimeZoneId();
+
+        // From org.embulk.spi.time.TimestampFormatter.Task
+        @Config("default_timestamp_format")
+        @ConfigDefault("\"%Y-%m-%d %H:%M:%S.%6N %z\"")
+        public String getDefaultTimestampFormat();
+
+        // From org.embulk.spi.util.LineEncoder.Task
+        @Config("charset")
+        @ConfigDefault("\"utf-8\"")
+        public Charset getCharset();
+
+        // From org.embulk.spi.util.LineEncoder.Task
+        @Config("newline")
+        @ConfigDefault("\"CRLF\"")
+        public Newline getNewline();
+
     }
 
     @Override
     public void transaction(ConfigSource config, Schema schema,
             FormatterPlugin.Control control)
     {
-        PluginTask task = config.loadConfig(PluginTask.class);
+        final PluginTask task = CONFIG_MAPPER.map(config, PluginTask.class);
 
+        // TODO: Use task.toTaskSource() after dropping v0.9
         control.run(task.dump());
     }
 
@@ -69,22 +102,22 @@ public class SingleValueFormatterPlugin
     private Schema getOutputSchema(int inputColumnIndex, Schema inputSchema)
     {
         Column outputColumn = inputSchema.getColumn(inputColumnIndex);
-        ImmutableList.Builder<Column> builder = ImmutableList.builder();
-        builder.add(outputColumn);
-        return new Schema(builder.build());
+        List<Column> columns = Collections.unmodifiableList(Arrays.asList(outputColumn));
+        return new Schema(columns);
     }
 
     @Override
     public PageOutput open(final TaskSource taskSource, final Schema inputSchema,
             final FileOutput output)
     {
-        final PluginTask task = taskSource.loadTask(PluginTask.class);
-        final LineEncoder encoder = new LineEncoder(output, task);
+        final TaskMapper taskMapper = CONFIG_MAPPER_FACTORY.createTaskMapper();
+        final PluginTask task = taskMapper.map(taskSource, PluginTask.class);
+        final LineEncoder encoder = LineEncoder.of(output, task.getNewline(), task.getCharset(), Exec.getBufferAllocator());
         final String nullString = task.getNullString();
 
         final int inputColumnIndex = getInputColumnIndex(task.getColumnName(), inputSchema);
         final Schema outputSchema = getOutputSchema(inputColumnIndex, inputSchema);
-        final DateTimeZone timezone  = DateTimeZone.forID(task.getTimezone());
+        final String timezone  = task.getTimezone();
         final TimestampFormatter timestampFormatter =
             createTimestampFormatter(task.getTimestampFormat(), timezone);
 
@@ -92,6 +125,7 @@ public class SingleValueFormatterPlugin
         encoder.nextFile();
 
         return new PageOutput() {
+            // TODO: Use Exec.getPageReader() after dropping v0.9
             private final PageReader pageReader = new PageReader(inputSchema);
 
             public void add(Page page)
@@ -142,7 +176,7 @@ public class SingleValueFormatterPlugin
                         public void timestampColumn(Column column)
                         {
                             if (!pageReader.isNull(inputColumnIndex)) {
-                                Timestamp value = pageReader.getTimestamp(inputColumnIndex);
+                                Instant value = pageReader.getTimestampInstant(inputColumnIndex);
                                 addValue(timestampFormatter.format(value));
                             }
                             else {
@@ -187,65 +221,11 @@ public class SingleValueFormatterPlugin
         };
     }
 
-
-    private class TimestampFormatterTaskImpl implements TimestampFormatter.Task
+    private TimestampFormatter createTimestampFormatter(String format, String timezone)
     {
-        private final DateTimeZone defaultTimeZone;
-        private final String defaultTimestampFormat;
-        public TimestampFormatterTaskImpl(
-                DateTimeZone defaultTimeZone,
-                String defaultTimestampFormat)
-        {
-            this.defaultTimeZone = defaultTimeZone;
-            this.defaultTimestampFormat = defaultTimestampFormat;
-        }
-        @Override
-        public DateTimeZone getDefaultTimeZone()
-        {
-            return this.defaultTimeZone;
-        }
-        @Override
-        public String getDefaultTimestampFormat()
-        {
-            return this.defaultTimestampFormat;
-        }
-        @Override
-        public ScriptingContainer getJRuby()
-        {
-            return null;
-        }
-    }
-
-    private class TimestampFormatterColumnOptionImpl implements TimestampFormatter.TimestampColumnOption
-    {
-        private final Optional<DateTimeZone> timeZone;
-        private final Optional<String> format;
-        public TimestampFormatterColumnOptionImpl(
-                Optional<DateTimeZone> timeZone,
-                Optional<String> format)
-        {
-            this.timeZone = timeZone;
-            this.format = format;
-        }
-        @Override
-        public Optional<DateTimeZone> getTimeZone()
-        {
-            return this.timeZone;
-        }
-        @Override
-        public Optional<String> getFormat()
-        {
-            return this.format;
-        }
-    }
-
-    // ToDo: Replace with `new TimestampFormatter(format, timezone)`
-    // after deciding to drop supporting embulk < 0.8.29.
-    private TimestampFormatter createTimestampFormatter(String format, DateTimeZone timezone)
-    {
-        TimestampFormatterTaskImpl task = new TimestampFormatterTaskImpl(timezone, format);
-        TimestampFormatterColumnOptionImpl columnOption = new TimestampFormatterColumnOptionImpl(
-                Optional.of(timezone), Optional.of(format));
-        return new TimestampFormatter(task, Optional.of(columnOption));
+        return TimestampFormatter.builder(format, true)
+                .setDefaultZoneFromString(timezone)
+                .setDefaultDateFromString("1970-01-01")
+                .build();
     }
 }
