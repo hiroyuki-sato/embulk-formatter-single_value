@@ -166,7 +166,7 @@ public class SingleValueFormatterPlugin
                         public void timestampColumn(Column column)
                         {
                             if (!pageReader.isNull(inputColumnIndex)) {
-                                Instant value = pageReader.getTimestampInstant(inputColumnIndex);
+                                Instant value = pageReader.getTimestamp(inputColumnIndex).getInstant();
                                 addValue(timestampFormatter.format(value));
                             }
                             else {
